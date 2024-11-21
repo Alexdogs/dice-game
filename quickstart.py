@@ -1,107 +1,112 @@
 import os
+import random
+import time
+from pathlib import Path
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import random
-from pathlib import Path
-import platform
-import time
 
-# Initialize total_time as a global variable
-total_time = 0
-
-# Check both possible file locations
-ec2_path = '/home/ec2-user/test.json'
-local_path = '/Users/alexbielanski/pythonProject1/test.json'
-
-SERVICE_ACCOUNT_FILE = ec2_path if Path(ec2_path).exists() else local_path
-if not Path(SERVICE_ACCOUNT_FILE).exists():
-    raise FileNotFoundError("Service account JSON file not found in either location")
-
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-
-credentials = service_account.Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-
-service = build('sheets', 'v4', credentials=credentials)
-
+# Constants
 SPREADSHEET_ID = '1oUOWFWj-nYWiXKMb4cD1cd4RPKAX5nmMrWcRbpL_cXI'
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+RESULTS_RANGE = 'Sheet1!A39002:A80000'  # Main results range
+TIME_CELL = 'Sheet1!AB68'  # Cell for execution time (was incorrectly referenced as AB48 in print statement)
+ITERATIONS = 500
+
+# File paths
+EC2_PATH = '/home/ec2-user/test.json'
+LOCAL_PATH = '/Users/alexbielanski/pythonProject1/test.json'
+
+# Target numbers and their ranges
+TARGET_NUMBERS = {
+    'a': {'range': (1, 4), 'target': 4},
+    'b': {'range': (1, 6), 'target': 6},
+    'c': {'range': (1, 8), 'target': 8},
+    'd': {'range': (1, 10), 'target': 10},
+    'e': {'range': (1, 12), 'target': 12},
+    'f': {'range': (1, 20), 'target': 20}
+}
 
 
+def get_credentials():
+    """Initialize and return Google Sheets credentials."""
+    service_account_file = EC2_PATH if Path(EC2_PATH).exists() else LOCAL_PATH
+    if not Path(service_account_file).exists():
+        raise FileNotFoundError("Service account JSON file not found in either location")
 
-answer = input("Did you update the cells? (y/n): ").lower()
-if answer == 'n':
-    print("Program terminated. Please update cells before continuing.")
-    exit()
-elif answer == 'y':
-    pass  # Program continues with existing code
-else:
-    print("Invalid input. Please enter 'y' or 'n'.")
-    exit()
+    return service_account.Credentials.from_service_account_file(
+        service_account_file, scopes=SCOPES)
+
+
+def check_winning_numbers():
+    """Check if randomly generated numbers match target values."""
+    return all(
+        random.randint(*num['range']) == num['target']
+        for num in TARGET_NUMBERS.values()
+    )
 
 
 def generate_numbers():
-    global total_time  # Declare we'll use the global total_time
-    start_time = time.time()  # Start timing
+    """Generate numbers and measure execution time."""
+    start_time = time.time()
+    results = []
 
-    def repeat():
-        a = random.randint(1, 4)
-        b = random.randint(1, 6)
-        c = random.randint(1, 8)
-        d = random.randint(1, 10)
-        e = random.randint(1, 12)
-        f = random.randint(1, 20)
-        return a == 4 and b == 6 and c == 8 and d == 10 and e == 12 and f == 20
+    for iteration in range(ITERATIONS):
+        attempts = 0
+        while not check_winning_numbers():
+            attempts += 1
 
-    mylist = []
+        results.append(attempts)
+        elapsed = time.time() - start_time
+        print(f"Completed {iteration + 1} iterations in {elapsed:.2f} seconds")
 
-    for x in range(500):
-        i = 0
-        while True:
-            i += 1
-            if repeat():
-                break
-
-        mylist.append(i)
-        if (x + 1) % 1 == 0:
-            elapsed_time = time.time() - start_time
-            print(f"Completed {x + 1} iterations in {elapsed_time:.2f} seconds")
-
-    global total_time
-    total_time = time.time() - start_time  # Assign to global variable
+    total_time = time.time() - start_time
     print(f"\nTotal execution time: {total_time:.2f} seconds")
-    return mylist
+    return results, total_time
 
 
-results = generate_numbers()
-wrapped_results = [[value] for value in results]
-RANGE_NAME = 'Sheet1!A29502:A30000'
+def update_spreadsheet(service, results, total_time):
+    """Update spreadsheet with results and execution time."""
+    try:
+        # Update main results
+        wrapped_results = [[value] for value in results]
+        result = service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=RESULTS_RANGE,
+            valueInputOption="RAW",
+            body={'values': wrapped_results}
+        ).execute()
+        print(f"{result.get('updatedCells')} cells updated.")
 
-body = {
-    'values': wrapped_results
-}
+        # Update execution time
+        time_result = service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=TIME_CELL,
+            valueInputOption="RAW",
+            body={'values': [[total_time]]}
+        ).execute()
+        print(f"Execution time ({total_time:.2f} seconds) written to cell {TIME_CELL}")
 
-try:
-    # Update the main results
-    result = service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=RANGE_NAME,
-        valueInputOption="RAW",
-        body=body
-    ).execute()
-    print(f"{result.get('updatedCells')} cells updated.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
-    # Add total time to cell AB44
-    time_body = {
-        'values': [[total_time]]
-    }
-    time_result = service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range='Sheet1!AB49',
-        valueInputOption="RAW",
-        body=time_body
-    ).execute()
-    print(f"Execution time ({total_time:.2f} seconds) written to cell AB48")
 
-except Exception as e:
-    print(f"An error occurred: {e}")
+def confirm_cell_update():
+    """Confirm with user if cells have been updated."""
+    answer = input("Did you update the cells? (y/n): ").lower()
+    if answer not in ['y', 'yes']:
+        print("Program terminated. Please update cells before continuing.")
+        exit()
 
+
+def main():
+    """Main program execution."""
+    credentials = get_credentials()
+    service = build('sheets', 'v4', credentials=credentials)
+
+    confirm_cell_update()
+    results, total_time = generate_numbers()
+    update_spreadsheet(service, results, total_time)
+
+
+if __name__ == "__main__":
+    main()
